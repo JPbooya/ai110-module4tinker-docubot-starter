@@ -1,147 +1,70 @@
-# DocuBot Model Card
+# Model Card
 
-This model card is a short reflection on your DocuBot system. Fill it out after you have implemented retrieval and experimented with all three modes:
+## Model Name
 
-1. Naive LLM over full docs  
-2. Retrieval only  
-3. RAG (retrieval plus LLM)
+**DocuBot: SnippetSeeker 1.0**
 
-Use clear, honest descriptions. It is fine if your system is imperfect.
+A tool that finds the part of the project's docs that best answers a developer's question. It can also explain that answer using an LLM.
 
----
+## Goal / Task
 
-## 1. System Overview
+A developer types a question, like "Where is the auth token generated?" SnippetSeeker finds the doc section most likely to have the answer. It can show that section as-is, or ask Gemini to write a short answer based on it.
 
-**What is DocuBot trying to do?**  
-Describe the overall goal in 2 to 3 sentences.
+## Data Used
 
-> _Your answer here._
+- The docs come from four markdown files in `docs/`: `AUTH.md`, `API_REFERENCE.md`, `DATABASE.md`, `SETUP.md`.
+- Each file is split into smaller sections using its `##` headers. There are 29 sections total. Most are 150 to 800 characters long.
+- The system only looks at words. It does not use embeddings or any outside knowledge.
+- This is a small, fixed set of docs. It does not update on its own. It also does not track users or their history, so it is not a personalized recommender.
 
-**What inputs does DocuBot take?**  
-For example: user question, docs in folder, environment variables.
+## Algorithm Summary
 
-> _Your answer here._
+1. **Build an index (once, at startup):** split each doc into sections. For every word in a section, record which section it appears in.
+2. **Clean the query:** lowercase the question and remove filler words like "the," "how," and "is."
+3. **Shortlist:** use the index to find sections that share at least one real word with the question.
+4. **Score:** count how many times the question's words appear in each shortlisted section. More matches means a higher score.
+5. **Rank:** sort sections by score and keep the top 3.
+6. **RAG mode only:** send those top 3 sections to Gemini. Tell it to answer using only that text, or say "I do not know" if it is not enough.
 
-**What outputs does DocuBot produce?**
+## Observed Behavior / Biases
 
-> _Your answer here._
+- **Length bias (fixed):** before we removed filler words, longer sections won just by having more common words like "the." One query about the database once ranked the actual `DATABASE.md` answer last, because a longer, unrelated section had more small word matches.
+- **Apostrophe bug (known, not fixed yet):** the word splitter strips apostrophes. So "What's" becomes two words: "what" and "s." The "s" is not a filler word, so it stays in the query. If some other section has its own stray "s" (from a word like "route's"), the two can match by accident. This can make an unrelated question look relevant. We chose to write this down instead of fixing it right away, to avoid causing a new bug late in the project.
+- **No real understanding of meaning:** the system only matches exact words. A question that uses different words than the docs, even if it means the same thing, may get poor or no results.
 
----
+## Evaluation Process
 
-## 2. Retrieval Design
+- Ran all 8 sample queries from `dataset.py` in retrieval-only mode. Checked by hand whether the top result matched the right doc and section.
+- Tested one question clearly answered in the docs: "Where is the auth token generated?" The correct section, `AUTH.md - Token Generation`, showed up in the top 3.
+- Tested one question clearly not covered by the docs: "What's the best recipe for chocolate chip cookies?" This test is what revealed the apostrophe bug above.
+- Compared results before and after splitting docs into sections. Splitting cut down on long, irrelevant text and fixed at least one case where an unrelated doc was returned instead of "I do not know."
+- Note: `evaluation.py` still checks results by exact filename. Since retrieval was changed to return section labels like `"AUTH.md - Token Generation"` instead of just `"AUTH.md"`, that script's scores are not reliable right now.
 
-**How does your retrieval system work?**  
-Describe your choices for indexing and scoring.
+## Intended Use and Non-Intended Use
 
-- How do you turn documents into an index?
-- How do you score relevance for a query?
-- How do you choose top snippets?
+**Intended for:**
+- Helping a developer working in this repo quickly find the doc section that answers their question.
+- Working without an LLM, in retrieval-only mode, when no API key is set.
+- Giving grounded answers in RAG mode, and saying "I do not know" instead of guessing.
 
-> _Your answer here._
+**Not intended for:**
+- General coding questions that are not about this repo's docs.
+- Legal, security, or production decisions without a human checking the answer.
+- Acting as a personal recommender. It does not know who the user is or what they've asked before.
+- Answering questions about anything not written in `docs/`.
 
-**What tradeoffs did you make?**  
-For example: speed vs precision, simplicity vs accuracy.
+## Ideas for Improvement
 
-> _Your answer here._
+1. Fix the apostrophe bug properly. For example, drop one-letter words, or handle contractions like "what's" directly.
+2. Make scoring fairer by adjusting for section length, so longer sections don't win just by being longer.
+3. Update `evaluation.py` to match the new section-label format, so retrieval quality can be checked automatically again.
 
----
+## Personal Reflection
 
-## 3. Use of the LLM (Gemini)
+Building the scoring and retrieval logic taught me that "simple" keyword matching still has a lot of hidden edge cases. The first version worked, but it quietly favored long documents over relevant ones, since it counted filler words like "the" and "how." I didn't expect a few common words to cause that much bias.
 
-**When does DocuBot call the LLM and when does it not?**  
-Briefly describe how each mode behaves.
+Splitting the docs into smaller sections, instead of returning whole files, made the biggest difference. It cut down on noise and made the results easier to actually read and trust.
 
-- Naive LLM mode:
-- Retrieval only mode:
-- RAG mode:
+The most surprising moment was testing an unrelated question and getting a result back instead of "I do not know." Digging into it showed a small tokenizer bug with apostrophes, something I never would have found without testing an intentionally bad question. It reminded me that testing edge cases and failure modes matters as much as testing the happy path.
 
-> _Your answer here._
-
-**What instructions do you give the LLM to keep it grounded?**  
-Summarize the rules from your prompt. For example: only use snippets, say "I do not know" when needed, cite files.
-
-> _Your answer here._
-
----
-
-## 4. Experiments and Comparisons
-
-Run the **same set of queries** in all three modes. Fill in the table with short notes.
-
-You can reuse or adapt the queries from `dataset.py`.
-
-| Query | Naive LLM: helpful or harmful? | Retrieval only: helpful or harmful? | RAG: helpful or harmful? | Notes |
-|------|---------------------------------|--------------------------------------|---------------------------|-------|
-| Example: Where is the auth token generated? | | | | |
-| Example: How do I connect to the database? | | | | |
-| Example: Which endpoint lists all users? | | | | |
-| Example: How does a client refresh an access token? | | | | |
-
-**What patterns did you notice?**  
-
-- When does naive LLM look impressive but untrustworthy?  
-- When is retrieval only clearly better?  
-- When is RAG clearly better than both?
-
-> _Your answer here._
-
----
-
-## 5. Failure Cases and Guardrails
-
-**Describe at least two concrete failure cases you observed.**  
-For each one, say:
-
-- What was the question?  
-- What did the system do?  
-- What should have happened instead?
-
-> _Failure case 1 here._
-
-> _Failure case 2 here._
-
-**When should DocuBot say “I do not know based on the docs I have”?**  
-Give at least two specific situations.
-
-> _Your answer here._
-
-**What guardrails did you implement?**  
-Examples: refusal rules, thresholds, limits on snippets, safe defaults.
-
-> _Your answer here._
-
----
-
-## 6. Limitations and Future Improvements
-
-**Current limitations**  
-List at least three limitations of your DocuBot system.
-
-1. _Limitation 1_
-2. _Limitation 2_
-3. _Limitation 3_
-
-**Future improvements**  
-List two or three changes that would most improve reliability or usefulness.
-
-1. _Improvement 1_
-2. _Improvement 2_
-3. _Improvement 3_
-
----
-
-## 7. Responsible Use
-
-**Where could this system cause real world harm if used carelessly?**  
-Think about wrong answers, missing information, or over trusting the LLM.
-
-> _Your answer here._
-
-**What instructions would you give real developers who want to use DocuBot safely?**  
-Write 2 to 4 short bullet points.
-
-- _Guideline 1_
-- _Guideline 2_
-- _Guideline 3 (optional)_
-
----
+If I kept working on this, I would slow down and fix smaller bugs like the apostrophe issue as I find them, instead of just documenting them for later. I would also try to test retrieval more systematically, instead of relying on spot-checking a handful of queries by hand.

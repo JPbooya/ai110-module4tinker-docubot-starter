@@ -8,7 +8,63 @@ Core DocuBot class responsible for:
 """
 
 import os
+import re
 import glob
+
+WORD_RE = re.compile(r"[a-z0-9]+")
+
+STOPWORDS = {
+    "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
+    "do", "does", "did", "have", "has", "had",
+    "i", "you", "he", "she", "it", "we", "they",
+    "this", "that", "these", "those",
+    "in", "on", "at", "to", "for", "of", "with", "by", "from", "as",
+    "and", "or", "but", "if", "so",
+    "what", "which", "who", "whom", "how", "when", "where", "why",
+    "there", "here", "any", "all",
+}
+
+
+def tokenize(text):
+    """Lowercase and split text into alphanumeric words, punctuation stripped."""
+    return WORD_RE.findall(text.lower())
+
+
+def tokenize_query(text):
+    """Tokenize and drop stopwords, so filler words don't skew relevance."""
+    return [word for word in tokenize(text) if word not in STOPWORDS]
+
+
+SECTION_RE = re.compile(r"(?m)^##\s+")
+
+
+def split_into_sections(filename, text):
+    """
+    Split a document into smaller chunks along its markdown '##' headers.
+
+    Returns a list of (label, text) tuples, where label combines the
+    filename and section title, e.g. "AUTH.md - Token Generation".
+    Docs with no '##' headers come back as a single "Full Document" chunk.
+    """
+    parts = SECTION_RE.split(text)
+
+    if len(parts) == 1:
+        body = parts[0].strip()
+        return [(f"{filename} - Full Document", body)] if body else []
+
+    chunks = []
+    intro = parts[0].strip()
+    if intro:
+        chunks.append((f"{filename} - Overview", intro))
+
+    for part in parts[1:]:
+        title, _, body = part.partition("\n")
+        body = body.strip()
+        if body:
+            chunks.append((f"{filename} - {title.strip()}", body))
+
+    return chunks
+
 
 class DocuBot:
     def __init__(self, docs_folder="docs", llm_client=None):
@@ -22,8 +78,15 @@ class DocuBot:
         # Load documents into memory
         self.documents = self.load_documents()  # List of (filename, text)
 
-        # Build a retrieval index (implemented in Phase 1)
-        self.index = self.build_index(self.documents)
+        # Split each document into smaller, individually retrievable sections
+        self.chunks = [
+            chunk
+            for filename, text in self.documents
+            for chunk in split_into_sections(filename, text)
+        ]  # List of (label, text), e.g. ("AUTH.md - Token Generation", "...")
+
+        # Build a retrieval index over the chunks (implemented in Phase 1)
+        self.index = self.build_index(self.chunks)
 
     # -----------------------------------------------------------
     # Document Loading
@@ -48,23 +111,21 @@ class DocuBot:
     # Index Construction (Phase 1)
     # -----------------------------------------------------------
 
-    def build_index(self, documents):
+    def build_index(self, chunks):
         """
-        TODO (Phase 1):
-        Build a tiny inverted index mapping lowercase words to the documents
-        they appear in.
+        Build a tiny inverted index mapping lowercase words to the chunk
+        labels they appear in.
 
         Example structure:
         {
-            "token": ["AUTH.md", "API_REFERENCE.md"],
-            "database": ["DATABASE.md"]
+            "token": ["AUTH.md - Token Generation", "API_REFERENCE.md - Authentication Endpoints"],
+            "database": ["DATABASE.md - Connection Configuration"]
         }
-
-        Keep this simple: split on whitespace, lowercase tokens,
-        ignore punctuation if needed.
         """
         index = {}
-        # TODO: implement simple indexing
+        for label, text in chunks:
+            for word in set(tokenize(text)):
+                index.setdefault(word, []).append(label)
         return index
 
     # -----------------------------------------------------------
@@ -81,18 +142,36 @@ class DocuBot:
         - Count how many appear in the text
         - Return the count as the score
         """
-        # TODO: implement scoring
-        return 0
+        query_words = tokenize_query(query)
+        text_words = tokenize(text)
+        return sum(text_words.count(word) for word in query_words)
 
     def retrieve(self, query, top_k=3):
         """
-        TODO (Phase 1):
-        Use the index and scoring function to select top_k relevant document snippets.
+        Use the index and scoring function to select the top_k most relevant
+        section chunks (not whole documents).
 
-        Return a list of (filename, text) sorted by score descending.
+        Return a list of (label, text) sorted by score descending, where
+        label is "filename - section title".
         """
-        results = []
-        # TODO: implement retrieval logic
+        query_words = tokenize_query(query)
+
+        # Use the index to shortlist candidate chunk labels
+        candidate_labels = set()
+        for word in query_words:
+            candidate_labels.update(self.index.get(word, []))
+
+        # Score each candidate chunk
+        scored = []
+        for label, text in self.chunks:
+            if label in candidate_labels:
+                score = self.score_document(query, text)
+                scored.append((score, label, text))
+
+        # Sort by score descending, return (label, text) tuples
+        scored.sort(key=lambda item: item[0], reverse=True)
+        results = [(label, text) for _, label, text in scored]
+
         return results[:top_k]
 
     # -----------------------------------------------------------
@@ -110,8 +189,8 @@ class DocuBot:
             return "I do not know based on these docs."
 
         formatted = []
-        for filename, text in snippets:
-            formatted.append(f"[{filename}]\n{text}\n")
+        for label, text in snippets:
+            formatted.append(f"[{label}]\n{text}\n")
 
         return "\n---\n".join(formatted)
 
